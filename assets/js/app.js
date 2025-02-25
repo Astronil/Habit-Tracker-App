@@ -36,6 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Elements
   const habitsList = document.getElementById("habitsList");
+  habitsList.inner = "";
   const addHabitBtn = document.getElementById("addHabitBtn");
   const habitModal = document.getElementById("habitModal");
   const habitForm = document.getElementById("habitForm");
@@ -69,6 +70,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!sessionStorage.getItem("redirected")) {
         sessionStorage.setItem("redirected", "true");
         window.location.href = "index.html";
+      } else {
+        sessionStorage.removeItem("redirected"); // Prevent looping
       }
     }
   });
@@ -271,7 +274,6 @@ document.addEventListener("DOMContentLoaded", () => {
         : null;
 
       if (!wasCompletedToday) {
-        // Check if we're maintaining the streak
         if (lastCompletedDate) {
           const daysSinceLastCompleted = Math.floor(
             (new Date() - lastCompletedDate) / (1000 * 60 * 60 * 24)
@@ -289,22 +291,25 @@ document.addEventListener("DOMContentLoaded", () => {
         streak = Math.max(0, streak - 1); // Decrement streak
       }
 
-      const habitRef = doc(firestore, "habits", id); // Reference to the habit document
+      const habitRef = doc(firestore, "habits", id);
       await updateDoc(habitRef, {
         lastCompleted: wasCompletedToday ? null : today,
         streak: streak,
         lastUpdated: Date.now(),
       });
 
-      showToast(wasCompletedToday ? "Habit unmarked" : "Habit completed!");
+      // Instead of reloading all habits, update the UI directly
+      habits[id].lastCompleted = wasCompletedToday ? null : today;
+      habits[id].streak = streak;
+      filterAndRenderHabits();
 
-      // Re-render habits to reflect updated state
-      loadHabits(); // Reload habits to ensure UI reflects the changes
+      showToast(wasCompletedToday ? "Habit unmarked" : "Habit completed!");
     } catch (error) {
       console.error("Error updating habit:", error);
       showToast("Error updating habit", true);
     }
   }
+
   // Edit habit
   function editHabit(id, habit) {
     editingHabitId = id;
@@ -417,11 +422,22 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Call Gemini API using GoogleGenerativeAI CDN
-  async function callGeminiAI(message) {
+  async function callGeminiAI(message, retries = 3) {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const result = await model.generateContent(message);
-    return result.response.text();
+
+    try {
+      const result = await model.generateContent(message);
+      return result.response.text();
+    } catch (error) {
+      console.error("Chatbot API error:", error);
+
+      if (retries > 0) {
+        return callGeminiAI(message, retries - 1); // Retry with a limit
+      } else {
+        return "Sorry, I encountered an error. Please try again.";
+      }
+    }
   }
 
   // Add message to chat
@@ -450,7 +466,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Schedule reminder
+  let reminderTimeouts = {}; // Store timeout references
+
   function scheduleReminder(habit) {
     if (!habit.reminder) return;
 
@@ -464,12 +481,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const timeUntilReminder = reminderTime - now;
-    setTimeout(() => {
+
+    // Clear existing timeout before setting a new one
+    if (reminderTimeouts[habit.name]) {
+      clearTimeout(reminderTimeouts[habit.name]);
+    }
+
+    reminderTimeouts[habit.name] = setTimeout(() => {
       new Notification("Habit Reminder", {
         body: `Time to complete your habit: ${habit.name}`,
         icon: "/icon.png",
       });
-      scheduleReminder(habit); // Schedule next day's reminder
+
+      scheduleReminder(habit); // Reschedule for next day
     }, timeUntilReminder);
   }
 
